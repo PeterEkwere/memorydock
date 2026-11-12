@@ -1,6 +1,7 @@
 'use strict';
 const $ = s => document.querySelector(s);
 let runs = [], events = [], selected = '', tab = 'events', filter = '', position = Infinity, timer = null, memory = null, offline = false;
+let submitting = false;
 const demos = {
   recall: 'What presentation style do I prefer? Please check your semantic memory before answering.',
   correct: 'Actually, for this MemoryDock demo I now prefer detailed explanations with one concrete example. Update demo.presentation.style, then retrieve it to confirm the correction.',
@@ -21,7 +22,21 @@ function renderConversation() {
 function render() {
   const seen = visible(); const stages = new Set(seen.map(e=>e.stage));
   if(seen.some(e=>e.payload.tool)) stages.add('retrieval');
-  document.querySelectorAll('.node').forEach(n=>{ n.classList.toggle('active',stages.has(n.dataset.stage));n.classList.toggle('current',seen.length>0 && seen[seen.length-1].stage===n.dataset.stage && (Number.isFinite(position)||runs.find(r=>r.id===selected)?.status==='running')); });
+  const moving = !!timer || (!Number.isFinite(position) && runs.find(r=>r.id===selected)?.status==='running');
+  const latest = seen[seen.length-1];
+  $('.neural-map').classList.toggle('running',moving);
+  document.querySelectorAll('[data-edge]').forEach(path=>{
+    const used=path.dataset.return ? seen.some(e=>e.stage===path.dataset.edge && e.title.endsWith('completed')) : stages.has(path.dataset.edge);
+    path.classList.toggle('lit',used);
+    path.classList.toggle('flowing',used && moving && (latest?.stage===path.dataset.edge || latest?.stage==='context'));
+  });
+  document.querySelectorAll('.memory-node').forEach(node=>{
+    const ops=seen.filter(e=>e.stage===node.dataset.stage && e.title.endsWith('completed')).length;
+    node.querySelector('.node-count').textContent=ops?ops+' operation'+(ops===1?'':'s'):stages.has(node.dataset.stage)?'Requested':'Not accessed';
+  });
+  $('#activity-text').textContent=latest?.title || 'Ready when you are.';
+  $('#activity-dot').classList.toggle('working',moving);
+  document.querySelectorAll('.node').forEach(n=>{ n.classList.toggle('active',stages.has(n.dataset.stage));n.classList.toggle('current',moving && latest?.stage===n.dataset.stage); });
   $('#event-count').textContent=seen.length+' EVENTS';
   $('#mode').textContent=offline?'OFFLINE REPLAY':Number.isFinite(position)?'RECORDED REPLAY':runs.find(r=>r.id===selected)?.status?.toUpperCase()||'READY';
   $('#scrubber').max=events.length;$('#scrubber').value=seen.length;
@@ -29,12 +44,14 @@ function render() {
   renderConversation();renderInspector();
 }
 function renderInspector(){
-  const root=$('#inspector-body'); root.replaceChildren();
+  const root=$('#inspector-body');
+  const opened=new Set([...root.querySelectorAll('details[open]')].map(n=>n.dataset.eventId));
+  const scroll=root.scrollTop;root.replaceChildren();
   if(tab==='events'){
     if(filter){const b=el('button','Showing '+filter+' · clear');b.onclick=()=>{filter='';renderInspector();};root.append(b);}
     const list=visible().filter(e=>!filter||e.stage===filter);
     if(!list.length)root.append(el('p','No observed events here yet. Submit a prompt or select a recorded run.'));
-    list.forEach(e=>{const d=el('details',undefined,'event '+e.stage);d.append(el('div',new Date(e.created).toLocaleTimeString(),'time'),el('summary',e.title),el('pre',JSON.stringify(e.payload,null,2)));root.append(d);});
+    list.forEach(e=>{const d=el('details',undefined,'event '+e.stage);d.dataset.eventId=String(e.id);d.open=opened.has(String(e.id));d.append(el('div',new Date(e.created).toLocaleTimeString(),'time'),el('summary',e.title),el('pre',JSON.stringify(e.payload,null,2)));root.append(d);});
   }else if(tab==='memory'){
     root.append(el('p',offline?'Exported memory snapshot; not reconstructed for the selected run.':'Current stored records, not a historical replay snapshot.'));
     if(!memory)return;
@@ -49,6 +66,7 @@ function renderInspector(){
     if(memory?.snapshot){box.append(el('h3','Production snapshot provenance'),el('pre',JSON.stringify(memory.snapshot,null,2)));}
     root.append(box);
   }
+  root.scrollTop=scroll;
 }
 function stop(){if(timer)clearInterval(timer);timer=null;$('#replay').textContent='▶ Replay';}
 async function refresh(){
@@ -62,7 +80,7 @@ async function refresh(){
       card.title='Last MCP connection: '+new Date(agent.last_docked).toLocaleString();
       return card;
     }));
-    $('#health').textContent=health.replay_only?'Offline · recorded Grace runs':health.busy?'Grace is running':health.ready?'Grace ready · MCP opens per run':'Setup required';$('#lamp').classList.toggle('ready',health.ready);$('#send').disabled=health.busy||health.replay_only;
+    $('#health').textContent=health.replay_only?'Offline · recorded Grace runs':health.busy?'Grace is running':health.ready?'Grace ready · MCP opens per run':'Setup required';$('#lamp').classList.toggle('ready',health.ready);$('#send').disabled=health.busy||health.replay_only||submitting;
     const select=$('#runs');select.replaceChildren(el('option','Choose a recorded run'));select.firstChild.value='';
     runs.forEach(r=>{const o=el('option',r.prompt.slice(0,65)+' · '+r.status);o.value=r.id;select.append(o);});select.value=selected;
     if(selected){events=(await api('/api/runs/'+selected)).events;render();}
@@ -73,7 +91,8 @@ document.querySelectorAll('[data-demo]').forEach(b=>b.onclick=()=>{$('#prompt').
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>{tab='events';filter=b.dataset.stage;selectTab();renderInspector();});
 function selectTab(){document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;selectTab();if(tab==='memory')loadMemory();renderInspector();});
-$('#prompt-form').onsubmit=async e=>{e.preventDefault();$('#error').textContent='';stop();try{const d=await api('/api/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:$('#prompt').value})});selected=d.id;position=Infinity;filter='';await refresh();}catch(e){$('#error').textContent=e.message;}};
+$('#prompt-form').onsubmit=async e=>{e.preventDefault();if(submitting||$('#send').disabled||!$('#prompt').value.trim())return;submitting=true;$('#send').disabled=true;$('#error').textContent='';stop();try{const d=await api('/api/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:$('#prompt').value})});selected=d.id;position=Infinity;filter='';$('#prompt').value='';await refresh();}catch(e){$('#error').textContent=e.message;}finally{submitting=false;await refresh();}};
+$('#prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!e.repeat)$('#prompt-form').requestSubmit();}});
 $('#runs').onchange=async e=>{stop();selected=e.target.value;position=Infinity;filter='';await refresh();};
 $('#replay').onclick=()=>{if(timer){stop();return;}if(!events.length)return;position=0;$('#replay').textContent='Ⅱ Pause';render();timer=setInterval(()=>{position=Math.min(position+1,events.length);render();if(position===events.length)stop();},1000);};
 $('#step').onclick=()=>{stop();position=Number.isFinite(position)?Math.min(position+1,events.length):1;render();};
