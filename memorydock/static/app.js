@@ -2,6 +2,25 @@
 const $ = s => document.querySelector(s);
 let runs = [], events = [], selected = '', tab = 'events', filter = '', position = Infinity, timer = null, memory = null, offline = false;
 let submitting = false;
+let pendingRun = null, serverBusy = false, connectionLost = false;
+let refreshVersion = 0, refreshing = false;
+function currentRun(){return pendingRun || runs.find(r=>r.id===selected);}
+function updateComposer(){
+  const working=!offline&&!connectionLost&&(submitting||serverBusy||currentRun()?.status==='running');
+  $('#prompt-form').classList.toggle('thinking',working);
+  $('#prompt-form').setAttribute('aria-busy',String(working));
+  $('#send').disabled=submitting||serverBusy||offline||connectionLost;
+  $('#send').textContent=submitting?'Sending…':working?'Grace is working…':'Send prompt ↑';
+}
+function progressLabel(run){
+  if(run.status==='sending')return 'Sending your prompt…';
+  if(connectionLost)return 'Connection lost — checking the server when it reconnects.';
+  const last=visible().at(-1);
+  if(last?.title.endsWith('requested'))return 'Grace is using memory: '+last.payload.tool+'…';
+  if(last?.stage==='context')return 'Memory returned · Grace is preparing her response…';
+  if(last?.stage==='connection')return 'Grace has docked · processing your prompt…';
+  return 'Prompt received · Grace is working…';
+}
 const demos = {
   recall: 'What presentation style do I prefer? Please check your semantic memory before answering.',
   correct: 'Actually, for this MemoryDock demo I now prefer detailed explanations with one concrete example. Update demo.presentation.style, then retrieve it to confirm the correction.',
@@ -13,11 +32,20 @@ function el(tag, text, cls) { const n = document.createElement(tag); if(text !==
 async function api(path, options) { const r = await fetch(path, options); const d = await r.json(); if(!r.ok) throw Error(d.error || 'Request failed'); return d; }
 function visible() { return events.slice(0, Number.isFinite(position) ? position : events.length); }
 function renderConversation() {
-  const run = runs.find(r => r.id === selected); if(!run) return;
-  const root = $('#conversation'); root.replaceChildren();
+  const run = currentRun(); if(!run) return;
+  const root = $('#conversation');
+  const atBottom=root.scrollHeight-root.scrollTop-root.clientHeight<65;
+  const newRun=root.dataset.runId!==run.id;root.dataset.runId=run.id;root.replaceChildren();
   const user = el('div', undefined, 'message user'); user.append(el('span','YOU','who'),el('div',run.prompt)); root.append(user);
   const response = visible().find(e=>e.stage==='response'||(e.stage==='error'&&e.payload.response));
-  const message=el('div',undefined,'message'); message.append(el('span','GRACE','who'),el('div',response ? response.payload.response : Number.isFinite(position) ? 'Replay in progress…' : run.status==='running' ? 'Grace is working. Memory operations will appear as they complete…' : run.response));root.append(message);
+  const waiting=!response&&!Number.isFinite(position)&&['sending','running'].includes(run.status);
+  const message=el('div',undefined,'message'); message.append(el('span','GRACE','who'));
+  if(waiting){
+    const progress=el('div',undefined,'reply-progress');progress.setAttribute('role','status');
+    const dots=el('span',undefined,'thinking-dots');dots.setAttribute('aria-hidden','true');for(let i=0;i<3;i++)dots.append(el('i'));
+    progress.append(dots,el('span',progressLabel(run)));message.append(progress);
+  }else message.append(el('div',response ? response.payload.response : Number.isFinite(position) ? 'Replay in progress…' : run.response));
+  root.append(message);if(newRun||atBottom)root.scrollTop=root.scrollHeight;
 }
 function render() {
   const seen = visible(); const stages = new Set(seen.map(e=>e.stage));
@@ -42,6 +70,7 @@ function render() {
   $('#scrubber').max=events.length;$('#scrubber').value=seen.length;
   $('#timeline-events').replaceChildren(...events.map((e,i)=>{const n=el('button',e.stage,'tick'+(i<seen.length?' seen':'')); n.onclick=()=>{stop();position=i+1;render();}; return n;}));
   renderConversation();renderInspector();
+  updateComposer();
 }
 function renderInspector(){
   const root=$('#inspector-body');
@@ -70,8 +99,11 @@ function renderInspector(){
 }
 function stop(){if(timer)clearInterval(timer);timer=null;$('#replay').textContent='▶ Replay';}
 async function refresh(){
+  if(refreshing)return;refreshing=true;
+  const version=++refreshVersion;
   try{
-    const [health,all]=await Promise.all([api('/api/health'),api('/api/runs')]);runs=all;
+    const [health,all]=await Promise.all([api('/api/health'),api('/api/runs')]);if(version!==refreshVersion)return;runs=all;
+    serverBusy=health.busy;connectionLost=false;
     offline=!!health.replay_only;
     $('#docked-agents').replaceChildren(...(health.agents||[]).map(agent=>{
       const card=el('div',undefined,'dock-card');
@@ -83,17 +115,33 @@ async function refresh(){
     $('#health').textContent=health.replay_only?'Offline · recorded Grace runs':health.busy?'Grace is running':health.ready?'Grace ready · MCP opens per run':'Setup required';$('#lamp').classList.toggle('ready',health.ready);$('#send').disabled=health.busy||health.replay_only||submitting;
     const select=$('#runs');select.replaceChildren(el('option','Choose a recorded run'));select.firstChild.value='';
     runs.forEach(r=>{const o=el('option',r.prompt.slice(0,65)+' · '+r.status);o.value=r.id;select.append(o);});select.value=selected;
-    if(selected){events=(await api('/api/runs/'+selected)).events;render();}
-  }catch(e){$('#health').textContent='Disconnected';$('#lamp').classList.remove('ready');$('#error').textContent=e.message;}
+    const target=selected;
+    if(target&&!pendingRun){const fetched=(await api('/api/runs/'+target)).events;if(version===refreshVersion&&target===selected&&!pendingRun){events=fetched;render();}}
+    updateComposer();
+  }catch(e){if(version!==refreshVersion)return;connectionLost=true;updateComposer();renderConversation();$('#health').textContent='Disconnected';$('#lamp').classList.remove('ready');$('#error').textContent=e.message;}
+  finally{refreshing=false;}
 }
 async function loadMemory(){try{memory=await api('/api/memory');if(tab!=='events')renderInspector();}catch(e){$('#error').textContent=e.message;}}
 document.querySelectorAll('[data-demo]').forEach(b=>b.onclick=()=>{$('#prompt').value=demos[b.dataset.demo];$('#prompt').focus();});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>{tab='events';filter=b.dataset.stage;selectTab();renderInspector();});
 function selectTab(){document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;selectTab();if(tab==='memory')loadMemory();renderInspector();});
-$('#prompt-form').onsubmit=async e=>{e.preventDefault();if(submitting||$('#send').disabled||!$('#prompt').value.trim())return;submitting=true;$('#send').disabled=true;$('#error').textContent='';stop();try{const d=await api('/api/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:$('#prompt').value})});selected=d.id;position=Infinity;filter='';$('#prompt').value='';await refresh();}catch(e){$('#error').textContent=e.message;}finally{submitting=false;await refresh();}};
+$('#prompt-form').onsubmit=async e=>{
+  e.preventDefault();if(submitting||$('#send').disabled||!$('#prompt').value.trim())return;
+  const prompt=$('#prompt').value.trim();submitting=true;$('#error').textContent='';stop();
+  refreshVersion++;
+  pendingRun={id:'pending-'+Date.now(),prompt,status:'sending',response:''};
+  selected='';events=[];position=Infinity;filter='';$('#prompt').value='';render();
+  try{
+    const d=await api('/api/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})});
+    selected=d.id;runs.unshift({...pendingRun,id:d.id,status:'running'});pendingRun=null;serverBusy=true;render();
+  }catch(e){
+    pendingRun.status='failed';pendingRun.response='Delivery was not confirmed. Check the run list before retrying.';
+    $('#error').textContent=e.message;if(!$('#prompt').value)$('#prompt').value=prompt;
+  }finally{submitting=false;render();await refresh();}
+};
 $('#prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!e.repeat)$('#prompt-form').requestSubmit();}});
-$('#runs').onchange=async e=>{stop();selected=e.target.value;position=Infinity;filter='';await refresh();};
+$('#runs').onchange=async e=>{if(submitting)return;stop();pendingRun=null;selected=e.target.value;position=Infinity;filter='';await refresh();};
 $('#replay').onclick=()=>{if(timer){stop();return;}if(!events.length)return;position=0;$('#replay').textContent='Ⅱ Pause';render();timer=setInterval(()=>{position=Math.min(position+1,events.length);render();if(position===events.length)stop();},1000);};
 $('#step').onclick=()=>{stop();position=Number.isFinite(position)?Math.min(position+1,events.length):1;render();};
 $('#live').onclick=()=>{stop();position=Infinity;render();};
