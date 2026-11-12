@@ -2,7 +2,15 @@
 
 An open-source, reusable memory layer intended for Grace and future AI agents, independent of any one model or agent framework.
 
-**Status: research and concept stage.** This repository contains project documentation only. The memory engine, connectors and performance targets are not implemented or validated yet.
+**Status: first working MCP memory visualizer.** A Grace integration now traces actual memory operations, displays semantic/episodic/procedural stores, and replays recorded runs. The broader memory engine described below remains a research proposal; it is not implemented or performance-validated.
+
+## Run the Grace presentation
+
+On the configured Mac, run `sh scripts/present.sh` or double-click **Launch MemoryDock.command**, then open **http://127.0.0.1:7777**. The service runs on Grace's server; the launcher opens an SSH tunnel. It does not launch a browser automatically.
+
+Read the [presentation script and launch guide](docs/PRESENTATION.md) and [MCP integration details](docs/MCP.md).
+
+The visualizer uses Grace's real memory code against isolated demonstration records, plus a read-only snapshot of a reviewed production procedure. It records MCP calls and confirmed results, not hidden reasoning. The first runner is Grace-specific; other agents need an adapter for their own memory stores. Frontend assets have no external dependencies.
 
 [Read the one-page overview (PDF)](docs/MemoryDock-Overview.pdf)
 
