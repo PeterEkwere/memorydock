@@ -23,7 +23,8 @@ def serve(state, run_id, code):
             if method == 'initialize':
                 result = {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},
                           'serverInfo': {'name': 'memorydock-grace', 'version': '0.1.0'}}
-                traces.event(run_id, 'connection', 'MCP stdio client connected', {'protocol': '2024-11-05', 'transport': 'stdio',
+                client_name = (req.get('params', {}).get('clientInfo', {}).get('name') or 'External agent') if external else 'Grace'
+                traces.event(run_id, 'connection', client_name + ' has docked', {'protocol': '2024-11-05', 'transport': 'stdio',
                     'client': req.get('params', {}).get('clientInfo', {}), 'external': external})
             elif method == 'ping': result = {}
             elif method == 'tools/list': result = {'tools': memory.tools()}

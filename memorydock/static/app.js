@@ -55,6 +55,13 @@ async function refresh(){
   try{
     const [health,all]=await Promise.all([api('/api/health'),api('/api/runs')]);runs=all;
     offline=!!health.replay_only;
+    $('#docked-agents').replaceChildren(...(health.agents||[]).map(agent=>{
+      const card=el('div',undefined,'dock-card');
+      card.append(el('span','↳','dock-symbol'),el('strong',agent.name+' has docked'),
+        el('span',agent.state==='connected'?'Connected via MCP · working now':'MCP connection verified · ready for the next run','dock-detail'));
+      card.title='Last MCP connection: '+new Date(agent.last_docked).toLocaleString();
+      return card;
+    }));
     $('#health').textContent=health.replay_only?'Offline · recorded Grace runs':health.busy?'Grace is running':health.ready?'Grace ready · MCP opens per run':'Setup required';$('#lamp').classList.toggle('ready',health.ready);$('#send').disabled=health.busy||health.replay_only;
     const select=$('#runs');select.replaceChildren(el('option','Choose a recorded run'));select.firstChild.value='';
     runs.forEach(r=>{const o=el('option',r.prompt.slice(0,65)+' · '+r.status);o.value=r.id;select.append(o);});select.value=selected;

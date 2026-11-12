@@ -48,7 +48,7 @@ def serve(args):
                 data['snapshot'] = json.loads(snap.read_text()) if snap.exists() else None
                 return self.send(data)
             if path == '/api/health':
-                return self.send({'ready': Path(args.grace_config).exists(), 'transport': 'MCP stdio', 'agent': 'Grace', 'busy': lock.locked()})
+                return self.send({'ready': Path(args.grace_config).exists(), 'transport': 'MCP stdio', 'agent': 'Grace', 'busy': lock.locked(), 'agents': store.docked_agents()})
             files = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript'), '/style.css': ('style.css', 'text/css')}
             if path in files:
                 name, mime = files[path]

@@ -46,6 +46,18 @@ class TraceStore:
         with self.connect() as db:
             return [dict(r) for r in db.execute('SELECT * FROM runs ORDER BY created DESC LIMIT 50')]
 
+    def docked_agents(self):
+        with self.connect() as db:
+            rows = db.execute("SELECT e.payload,e.created,r.status FROM events e LEFT JOIN runs r ON r.id=e.run_id WHERE e.stage='connection' ORDER BY e.id DESC LIMIT 100").fetchall()
+        agents = {}
+        for row in rows:
+            payload = json.loads(row['payload'])
+            name = (payload.get('client', {}).get('name') or 'External agent') if payload.get('external') else 'Grace'
+            if name not in agents:
+                agents[name] = {'name': name, 'last_docked': row['created'],
+                                'state': 'connected' if row['status'] == 'running' else 'idle'}
+        return list(agents.values())
+
     def events(self, rid):
         with self.connect() as db:
             return [{**dict(r), 'payload': json.loads(r['payload'])} for r in db.execute('SELECT * FROM events WHERE run_id=? ORDER BY id', (rid,))]
